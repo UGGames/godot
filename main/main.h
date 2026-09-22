@@ -83,6 +83,11 @@ public:
 	static bool iteration();
 	static void force_redraw();
 
+	// UGGames fork: re-seed the frame clock so the NEXT iteration() measures
+	// its delta from now instead of from the last frame before a host-driven
+	// pause. See Main::reset_frame_clock() in main.cpp and docs/PATCHES.md.
+	static void reset_frame_clock();
+
 	static bool is_iterating();
 
 	static void cleanup(bool p_force = false);

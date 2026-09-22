@@ -134,6 +134,17 @@ public:
 	void on_focus_out();
 	void on_focus_in();
 
+	// UGGames fork: in an embedded (libgodot) host the engine's
+	// GDTAppDelegateService is NOT the UIApplicationDelegate, so
+	// applicationDidBecomeActive: never runs and `is_focused` is never
+	// latched to true. on_focus_out() would then return without stopping
+	// the display link or the audio driver. These let the host state what
+	// the engine's idea of focus is, with no side effects of their own;
+	// the work still happens in on_focus_out()/on_focus_in().
+	// Used by libgodot_ios_sleep()/libgodot_ios_wake(). See docs/PATCHES.md.
+	void set_focused(bool p_focused) { is_focused = p_focused; }
+	bool get_focused() const { return is_focused; }
+
 	void on_enter_background();
 	void on_exit_background();
 

@@ -5075,6 +5075,27 @@ void Main::force_redraw() {
 	force_redraw_requested = true;
 }
 
+// UGGames fork (ug/jigsaw-4.6.1), for the libgodot host's sleep()/wake().
+//
+// iteration() derives `process_step` from main_timer_sync.advance(), which
+// returns (current_cpu_ticks_usec - last_cpu_ticks_usec) smoothed and clamped
+// only RELATIVE to itself -- there is no upper bound on it. `last_ticks` feeds
+// the FPS counter the same way. When the host stops the display link, wall
+// time keeps running, so the first frame after it restarts would report the
+// whole covered period as one delta: physics is bounded by
+// max_physics_steps_per_frame, but _process(delta) and Tween are not, so every
+// in-flight tween would complete in that single frame.
+//
+// Calling this immediately before rendering resumes makes the next delta the
+// real inter-frame time. It does not touch time_accum or time_deficit (both
+// are frozen while no iteration runs and are bounded by a physics step), and
+// it does not touch Engine::time_scale, which is the project's own setting.
+void Main::reset_frame_clock() {
+	const uint64_t ticks = OS::get_singleton()->get_ticks_usec();
+	last_ticks = ticks;
+	main_timer_sync.init(ticks);
+}
+
 /* Engine deinitialization
  *
  * Responsible for freeing all the memory allocated by previous setup steps,
