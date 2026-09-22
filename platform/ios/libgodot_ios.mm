@@ -35,23 +35,46 @@
 
 #include "os_ios.h"
 
+#include "drivers/apple_embedded/ug_instr.h"
+
 static OS_IOS *os = nullptr;
 static GodotInstance *instance = nullptr;
 
 GDExtensionObjectPtr libgodot_create_godot_instance(int p_argc, char *p_argv[], GDExtensionInitializationFunction p_init_func) {
-	ERR_FAIL_COND_V_MSG(instance != nullptr, nullptr, "Only one Godot Instance may be created.");
+	UG_INSTR("libgodot_create_godot_instance enter argc=%d\n", p_argc);
+#ifdef UG_GODOT_INSTR
+	for (int i = 0; i < p_argc; i++) {
+		UG_INSTR("  argv[%d]=%s\n", i, p_argv[i]);
+	}
+#endif
 
+	// One GodotInstance per process (baseline semantics, kept): a second
+	// create returns nullptr. Pintap's build reported it through the
+	// instrumentation line; the engine's own error path is kept as well.
+	if (instance != nullptr) {
+		UG_INSTR("FAIL: instance already exists (singleton violation)\n");
+		ERR_FAIL_V_MSG(nullptr, "Only one Godot Instance may be created.");
+	}
+
+	UG_INSTR("creating OS_IOS...\n");
 	os = new OS_IOS();
+	UG_INSTR("OS_IOS created at %p\n", (void *)os);
 
+	UG_INSTR("calling Main::setup with argc=%d\n", p_argc - 1);
 	Error err = Main::setup(p_argv[0], p_argc - 1, &p_argv[1], false);
+	UG_INSTR("Main::setup returned err=%d (OK=%d)\n", (int)err, (int)OK);
 	if (err != OK) {
+		UG_INSTR("FAIL: Main::setup err != OK\n");
 		memdelete(os);
 		os = nullptr;
 		return nullptr;
 	}
 
+	UG_INSTR("creating GodotInstance...\n");
 	instance = memnew(GodotInstance);
+	UG_INSTR("calling instance->initialize(p_init_func)...\n");
 	if (!instance->initialize(p_init_func)) {
+		UG_INSTR("FAIL: instance->initialize returned false\n");
 		memdelete(instance);
 		instance = nullptr;
 		Main::cleanup();
@@ -60,6 +83,7 @@ GDExtensionObjectPtr libgodot_create_godot_instance(int p_argc, char *p_argv[], 
 		return nullptr;
 	}
 
+	UG_INSTR("SUCCESS: returning instance %p\n", (void *)instance);
 	return (GDExtensionObjectPtr)instance;
 }
 
