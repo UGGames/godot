@@ -32,6 +32,7 @@
 
 #import "display_server_apple_embedded.h"
 #import "os_apple_embedded.h"
+#import "ug_instr.h"
 
 #include "core/config/project_settings.h"
 #include "core/os/keyboard.h"
@@ -61,6 +62,18 @@
 
 	if (!OS::get_singleton()) {
 		exit(0);
+	}
+
+	// PATCH (SwiftGodotKit embedding): if the engine was already initialized
+	// externally (via libgodot_create_godot_instance + GodotInstance::start),
+	// the main loop will exist. Skip our own Main::setup2() / OS::start()
+	// because calling them again crashes.
+	if (OS::get_singleton()->get_main_loop() != nullptr) {
+		UG_INSTR("GDTViewRenderer.setupView: main_loop exists, skipping internal setup\n");
+		self.hasFinishedProjectDataSetup = YES;
+		self.hasStartedMain = YES;
+		self.hasFinishedSetup = YES;
+		return NO;
 	}
 
 	if (!self.hasFinishedProjectDataSetup) {
