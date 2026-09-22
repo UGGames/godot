@@ -433,10 +433,18 @@ static const float earth_gravity = 9.80665;
 	// our orientation which is not a good thing when you're trying to get
 	// your user to move the screen in all directions and want consistent
 	// output
+	// PATCH (SwiftGodotKit embedding): when Godot is embedded inside a
+	// SwiftUI host, [UIApplication.sharedApplication.delegate window] is
+	// "unrecognized selector" — SwiftUI doesn't put a `window` on the
+	// delegate. Use this view's own window instead.
+	UIWindow *_gdtWindow = self.window;
+	if (!_gdtWindow) {
+		_gdtWindow = [[[[UIApplication sharedApplication] connectedScenes] anyObject] valueForKey:@"keyWindow"];
+	}
 #if defined(VISIONOS_ENABLED)
-	UIInterfaceOrientation interfaceOrientation = [UIApplication sharedApplication].delegate.window.windowScene.effectiveGeometry.interfaceOrientation;
+	UIInterfaceOrientation interfaceOrientation = _gdtWindow.windowScene.effectiveGeometry.interfaceOrientation;
 #else
-	UIInterfaceOrientation interfaceOrientation = [UIApplication sharedApplication].delegate.window.windowScene.interfaceOrientation;
+	UIInterfaceOrientation interfaceOrientation = _gdtWindow.windowScene.interfaceOrientation;
 #endif
 
 	switch (interfaceOrientation) {
