@@ -40,6 +40,12 @@
 static OS_IOS *os = nullptr;
 static GodotInstance *instance = nullptr;
 
+// UGGames fork: true between libgodot_ios_sleep() and libgodot_ios_wake().
+// This host is the only thing in the process that drives engine focus, so this
+// is the single source of truth for the pair. See the block at the end of this
+// file and docs/PATCHES.md.
+static bool asleep = false;
+
 GDExtensionObjectPtr libgodot_create_godot_instance(int p_argc, char *p_argv[], GDExtensionInitializationFunction p_init_func) {
 	UG_INSTR("libgodot_create_godot_instance enter argc=%d\n", p_argc);
 #ifdef UG_GODOT_INSTR
@@ -90,6 +96,7 @@ GDExtensionObjectPtr libgodot_create_godot_instance(int p_argc, char *p_argv[], 
 void libgodot_destroy_godot_instance(GDExtensionObjectPtr p_godot_instance) {
 	GodotInstance *godot_instance = (GodotInstance *)p_godot_instance;
 	if (instance == godot_instance) {
+		asleep = false;
 		godot_instance->stop();
 		memdelete(godot_instance);
 		instance = nullptr;
@@ -99,4 +106,101 @@ void libgodot_destroy_godot_instance(GDExtensionObjectPtr p_godot_instance) {
 			os = nullptr;
 		}
 	}
+}
+
+// MARK: - UGGames fork (ug/jigsaw-4.6.1): host-driven sleep / wake
+//
+// Why this exists. In a libgodot host the SwiftUI application owns the process
+// and its own UIApplicationDelegate; the engine's GDTAppDelegateService is
+// never installed as the delegate, so none of applicationWillResignActive:,
+// applicationDidBecomeActive: or the AVAudioSession interruption observer it
+// registers ever fires. Two consequences:
+//
+//   1. GDTView's CADisplayLink keeps ticking at full rate while an opaque host
+//      screen covers the board, burning frames and battery for nothing.
+//      GodotInstance::focus_out()/pause() do NOT help: they only post a
+//      MainLoop notification (core/extension/godot_instance.cpp:92-117).
+//   2. OS_AppleEmbedded::is_focused is therefore never latched to true, so a
+//      bare call to on_focus_out() would take its `if (is_focused)` branch and
+//      do nothing at all (drivers/apple_embedded/os_apple_embedded.mm:742).
+//
+// So the host states the focus it owns (set_focused) and then runs the engine's
+// own path, which is the whole point: sleep()/wake() do exactly what a real
+// Godot iOS app does on resign/become-active, no more --
+//   FOCUS_OUT window event -> NOTIFICATION_APPLICATION_FOCUS_OUT ->
+//   [godotView stopRendering] -> audio_driver.stop()
+// and the reverse on wake, plus one thing a real app does not need:
+// Main::reset_frame_clock(). Wall time runs while the display link is stopped
+// and nothing bounds the resulting process_step, so without the reset the
+// first frame after waking would deliver the entire covered period as one
+// _process delta and finish every in-flight Tween instantly.
+//
+// Both calls are main-thread only (they touch UIKit through stopRendering /
+// startRendering) and idempotent. `asleep` is this host's single source of
+// truth for the pair; nothing else in the process drives focus.
+
+// Returns the live OS_IOS only when p_godot_instance is the instance this
+// translation unit created and that instance has actually started. Anything
+// else -- no instance, a stale pointer, a pre-start call -- is a no-op.
+static OS_IOS *ug_live_os(GDExtensionObjectPtr p_godot_instance) {
+	if (instance == nullptr || os == nullptr) {
+		return nullptr;
+	}
+	if ((GodotInstance *)p_godot_instance != instance) {
+		return nullptr;
+	}
+	if (!instance->is_started()) {
+		return nullptr;
+	}
+	return os;
+}
+
+void libgodot_ios_sleep(GDExtensionObjectPtr p_godot_instance) {
+	OS_IOS *live_os = ug_live_os(p_godot_instance);
+	if (live_os == nullptr) {
+		UG_INSTR("libgodot_ios_sleep: no live instance, ignored\n");
+		return;
+	}
+	if (asleep) {
+		UG_INSTR("libgodot_ios_sleep: already asleep, ignored\n");
+		return;
+	}
+
+	asleep = true;
+
+	// The engine's app delegate never latched this in an embedded host; the
+	// host owns focus here. Without it on_focus_out() is a silent no-op.
+	live_os->set_focused(true);
+	live_os->on_focus_out();
+
+	UG_INSTR("libgodot_ios_sleep: display link and audio driver stopped\n");
+}
+
+void libgodot_ios_wake(GDExtensionObjectPtr p_godot_instance) {
+	OS_IOS *live_os = ug_live_os(p_godot_instance);
+	if (live_os == nullptr) {
+		UG_INSTR("libgodot_ios_wake: no live instance, ignored\n");
+		return;
+	}
+	if (!asleep) {
+		UG_INSTR("libgodot_ios_wake: not asleep, ignored\n");
+		return;
+	}
+
+	asleep = false;
+
+	// FOCUS_IN window event, NOTIFICATION_APPLICATION_FOCUS_IN,
+	// [godotView startRendering], audio_driver.start().
+	live_os->on_focus_in();
+
+	// After startRendering, and as late as possible before the CADisplayLink's
+	// first drawView, so the next Main::iteration measures a real frame delta
+	// instead of the whole covered period.
+	Main::reset_frame_clock();
+
+	UG_INSTR("libgodot_ios_wake: rendering resumed, frame clock reset\n");
+}
+
+GDExtensionBool libgodot_ios_is_asleep(void) {
+	return asleep ? 1 : 0;
 }
