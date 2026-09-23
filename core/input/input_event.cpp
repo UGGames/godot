@@ -1438,6 +1438,22 @@ int InputEventScreenDrag::get_index() const {
 	return index;
 }
 
+void InputEventScreenDrag::set_coalesced(bool p_coalesced) {
+	coalesced = p_coalesced;
+}
+
+bool InputEventScreenDrag::is_coalesced() const {
+	return coalesced;
+}
+
+void InputEventScreenDrag::set_predicted(bool p_predicted) {
+	predicted = p_predicted;
+}
+
+bool InputEventScreenDrag::is_predicted() const {
+	return predicted;
+}
+
 void InputEventScreenDrag::set_tilt(const Vector2 &p_tilt) {
 	tilt = p_tilt;
 }
@@ -1511,6 +1527,8 @@ RequiredResult<InputEvent> InputEventScreenDrag::xformed_by(const Transform2D &p
 	sd->set_window_id(get_window_id());
 
 	sd->set_index(index);
+	sd->set_coalesced(coalesced);
+	sd->set_predicted(predicted);
 	sd->set_pressure(get_pressure());
 	sd->set_pen_inverted(get_pen_inverted());
 	sd->set_tilt(get_tilt());
@@ -1530,7 +1548,7 @@ String InputEventScreenDrag::as_text() const {
 }
 
 String InputEventScreenDrag::_to_string() {
-	return vformat("InputEventScreenDrag: index=%d, position=(%s), relative=(%s), velocity=(%s), pressure=%.2f, tilt=(%s), pen_inverted=(%s)", index, String(get_position()), String(get_relative()), String(get_velocity()), get_pressure(), String(get_tilt()), get_pen_inverted());
+	return vformat("InputEventScreenDrag: index=%d, position=(%s), relative=(%s), velocity=(%s), pressure=%.2f, tilt=(%s), pen_inverted=(%s), coalesced=(%s), predicted=(%s)", index, String(get_position()), String(get_relative()), String(get_velocity()), get_pressure(), String(get_tilt()), get_pen_inverted(), coalesced, predicted);
 }
 
 bool InputEventScreenDrag::accumulate(const Ref<InputEvent> &p_event) {
@@ -1540,6 +1558,16 @@ bool InputEventScreenDrag::accumulate(const Ref<InputEvent> &p_event) {
 	}
 
 	if (get_index() != drag->get_index()) {
+		return false;
+	}
+
+	// UGGames fork: never fold a coalesced sample into anything. Accumulation exists to keep the
+	// NEWEST position and throw the rest away, which is right for a transform and wrong for a
+	// gesture machine -- folding the batch back together would hand the scene the same chord that
+	// coalescedTouches(for:) was read to avoid. And never fold a prediction into a measurement (or
+	// the other way round): a predicted position would then silently become the real one, and the
+	// scene could no longer tell which samples it is allowed to commit on.
+	if (coalesced || drag->coalesced || predicted != drag->predicted) {
 		return false;
 	}
 
@@ -1555,6 +1583,12 @@ bool InputEventScreenDrag::accumulate(const Ref<InputEvent> &p_event) {
 void InputEventScreenDrag::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_index", "index"), &InputEventScreenDrag::set_index);
 	ClassDB::bind_method(D_METHOD("get_index"), &InputEventScreenDrag::get_index);
+
+	ClassDB::bind_method(D_METHOD("set_coalesced", "coalesced"), &InputEventScreenDrag::set_coalesced);
+	ClassDB::bind_method(D_METHOD("is_coalesced"), &InputEventScreenDrag::is_coalesced);
+
+	ClassDB::bind_method(D_METHOD("set_predicted", "predicted"), &InputEventScreenDrag::set_predicted);
+	ClassDB::bind_method(D_METHOD("is_predicted"), &InputEventScreenDrag::is_predicted);
 
 	ClassDB::bind_method(D_METHOD("set_tilt", "tilt"), &InputEventScreenDrag::set_tilt);
 	ClassDB::bind_method(D_METHOD("get_tilt"), &InputEventScreenDrag::get_tilt);
@@ -1581,6 +1615,8 @@ void InputEventScreenDrag::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_screen_velocity"), &InputEventScreenDrag::get_screen_velocity);
 
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "index"), "set_index", "get_index");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "coalesced"), "set_coalesced", "is_coalesced");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "predicted"), "set_predicted", "is_predicted");
 	ADD_PROPERTY(PropertyInfo(Variant::VECTOR2, "tilt"), "set_tilt", "get_tilt");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "pressure"), "set_pressure", "get_pressure");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "pen_inverted"), "set_pen_inverted", "get_pen_inverted");

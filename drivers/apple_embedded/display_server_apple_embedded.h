@@ -132,7 +132,10 @@ public:
 	// MARK: Touches and Apple Pencil
 
 	void touch_press(int p_idx, int p_x, int p_y, bool p_pressed, bool p_double_click);
-	void touch_drag(int p_idx, int p_prev_x, int p_prev_y, int p_x, int p_y, float p_pressure, Vector2 p_tilt);
+	// UGGames fork (ug/jigsaw-4.6.1): `p_coalesced` marks an intermediate sample of a
+	// coalescedTouches(for:) batch, `p_predicted` a predictedTouches(for:) extrapolation.
+	// Both default false, so every existing call site keeps its exact previous meaning.
+	void touch_drag(int p_idx, int p_prev_x, int p_prev_y, int p_x, int p_y, float p_pressure, Vector2 p_tilt, bool p_coalesced = false, bool p_predicted = false);
 	void touches_canceled(int p_idx);
 
 	// MARK: Keyboard

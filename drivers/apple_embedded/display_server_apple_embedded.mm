@@ -280,10 +280,12 @@ void DisplayServerAppleEmbedded::touch_press(int p_idx, int p_x, int p_y, bool p
 	perform_event(ev);
 }
 
-void DisplayServerAppleEmbedded::touch_drag(int p_idx, int p_prev_x, int p_prev_y, int p_x, int p_y, float p_pressure, Vector2 p_tilt) {
+void DisplayServerAppleEmbedded::touch_drag(int p_idx, int p_prev_x, int p_prev_y, int p_x, int p_y, float p_pressure, Vector2 p_tilt, bool p_coalesced, bool p_predicted) {
 	Ref<InputEventScreenDrag> ev;
 	ev.instantiate();
 	ev->set_index(p_idx);
+	ev->set_coalesced(p_coalesced);
+	ev->set_predicted(p_predicted);
 	ev->set_pressure(p_pressure);
 	ev->set_tilt(p_tilt);
 	ev->set_position(Vector2(p_x, p_y));
