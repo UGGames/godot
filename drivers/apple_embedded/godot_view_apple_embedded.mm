@@ -122,6 +122,17 @@ static const float earth_gravity = 9.80665;
 	self.preferredFrameRate = 60;
 	self.useCADisplayLink = bool(GLOBAL_DEF("display.AppleEmbedded/use_cadisplaylink", true)) ? YES : NO;
 
+	// UGGames fork (ug/jigsaw-4.6.1). Both are read live in -touchesMoved:withEvent: through
+	// GLOBAL_GET_CACHED, which re-reads whenever ProjectSettings changes -- so a game can flip
+	// them at runtime with ProjectSettings.set_setting() and the next touch obeys.
+	//
+	// `coalesced_touches` defaults ON: it is a pure fidelity win with no behavioural risk.
+	// `predicted_touches` defaults OFF and is meant to be turned on only for the span of a
+	// gesture that is a pure function of the finger position (dragging one object). A predicted
+	// sample is a guess; a game that commits state on one will commit the wrong state.
+	GLOBAL_DEF("input_devices/pointing/apple_embedded/coalesced_touches", true);
+	GLOBAL_DEF("input_devices/pointing/apple_embedded/predicted_touches", false);
+
 #if !defined(VISIONOS_ENABLED)
 	self.contentScaleFactor = [UIScreen mainScreen].scale;
 #endif
@@ -202,7 +213,32 @@ static const float earth_gravity = 9.80665;
 
 	if (self.useCADisplayLink) {
 		self.displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(drawView)];
-		self.displayLink.preferredFramesPerSecond = self.preferredFrameRate;
+
+		// UGGames fork (ug/jigsaw-4.6.1): ask for a RANGE, not a fixed rate.
+		//
+		// `preferredFramesPerSecond` is deprecated since iOS 15 and, on a variable-refresh
+		// (ProMotion) display, it is also actively harmful: Core Animation can only honour a
+		// fixed request at a divisor of the panel rate, so the first frame the app cannot
+		// sustain at 120 drops it to 60 -- and it has no mandate to climb back. A drag that
+		// oscillates between 120 and 60 feels markedly worse than one pinned anywhere in
+		// between. A CAFrameRateRange lets the system settle at 80, 90 or 110 and, crucially,
+		// recover to 120 when the load passes.
+		//
+		// The floor is 2/3 of the preferred rate so the range always spans more than one
+		// achievable rate (at 120 that is Apple's own 80...120 ProMotion example); at 60 and
+		// below the range collapses to the old fixed request, which is what those panels do
+		// anyway. iOS additionally ignores anything above 60 Hz on iPhone unless the host's
+		// Info.plist carries CADisableMinimumFrameDurationOnPhone -- that is a host
+		// responsibility and the engine cannot check it from here.
+		if (@available(iOS 15.0, tvOS 15.0, visionOS 1.0, *)) {
+			const float preferred = MAX(1.0f, self.preferredFrameRate);
+			const float minimum = preferred > 60.0f ? (preferred * 2.0f / 3.0f) : preferred;
+			self.displayLink.preferredFrameRateRange = CAFrameRateRangeMake(minimum, preferred, preferred);
+		} else {
+			GODOT_CLANG_WARNING_PUSH_AND_IGNORE("-Wdeprecated-declarations")
+			self.displayLink.preferredFramesPerSecond = self.preferredFrameRate;
+			GODOT_CLANG_WARNING_POP
+		}
 
 		// Setup DisplayLink in main thread
 		[self.displayLink addToRunLoop:[NSRunLoop currentRunLoop] forMode:NSRunLoopCommonModes];
@@ -347,15 +383,74 @@ static const float earth_gravity = 9.80665;
 	}
 }
 
+// UGGames fork (ug/jigsaw-4.6.1): one delivery, every sample. See docs/PATCHES.md,
+// "Coalesced and predicted touches", and jigsaw-mobile docs/touch-latency.md.
+//
+// Stock Godot took `locationInView:` off the delivered UITouch and ignored `event` entirely.
+// The digitizer samples at up to 240 Hz while UIKit delivers at the display rate, so that threw
+// away roughly half of a 120 Hz drag and rather more of a 60 Hz one -- not a latency cost (the
+// newest sample is still the newest) but a FIDELITY cost: any decision taken on the shape of the
+// path, rather than on its endpoint, was taken on a chord.
+//
+// So: emit every coalesced sample, in order, then optionally emit UIKit's prediction of where
+// the finger is going. Apple is explicit that the two sets must not be mixed
+// (coalescedTouchesForTouch: already ends with the delivered touch, so the delivered touch is
+// never sent twice) and that predictions are temporary data to be discarded on the next real
+// event -- which is what `InputEventScreenDrag::predicted` lets the scene do.
 - (void)touchesMoved:(NSSet *)touches withEvent:(UIEvent *)event {
+	const bool use_coalesced = GLOBAL_GET_CACHED(bool, "input_devices/pointing/apple_embedded/coalesced_touches");
+	const bool use_predicted = GLOBAL_GET_CACHED(bool, "input_devices/pointing/apple_embedded/predicted_touches");
+	// Predict exactly one frame ahead: that is the delay this is meant to cancel, and a longer
+	// lead is a bigger lie to correct when the finger decelerates. UIKit hands out more than one
+	// frame of prediction; the rest is deliberately dropped.
+	const NSTimeInterval prediction_lead = 1.0 / MAX(1.0f, self.preferredFrameRate);
+
 	for (UITouch *touch in touches) {
 		int tid = [self getTouchIDForTouch:touch];
 		ERR_FAIL_COND(tid == -1);
-		CGPoint touchPoint = [touch locationInView:self];
+
+		NSArray<UITouch *> *samples = nil;
+		if (use_coalesced && event != nil) {
+			samples = [event coalescedTouchesForTouch:touch];
+		}
+		if (samples.count == 0) {
+			// No coalescing available (older OS, a synthetic event, or the feature turned off):
+			// the delivered touch IS the whole batch, and this is byte-for-byte the old path.
+			samples = @[ touch ];
+		}
+
+		// `previousLocationInView:` on the DELIVERED touch is where the finger was at the last
+		// delivery, so chaining prev_point through the batch makes every `relative` a real
+		// segment of the path whose sum is exactly the chord the unpatched engine reported.
 		CGPoint prev_point = [touch previousLocationInView:self];
-		CGFloat alt = [touch altitudeAngle];
-		CGVector azim = [touch azimuthUnitVectorInView:self];
-		DisplayServerAppleEmbedded::get_singleton()->touch_drag(tid, prev_point.x * self.contentScaleFactor, prev_point.y * self.contentScaleFactor, touchPoint.x * self.contentScaleFactor, touchPoint.y * self.contentScaleFactor, [touch force] / [touch maximumPossibleForce], Vector2(azim.dx, azim.dy) * Math::cos(alt));
+		const NSUInteger last = samples.count - 1;
+		for (NSUInteger i = 0; i <= last; i++) {
+			UITouch *sample = samples[i];
+			CGPoint touchPoint = [sample locationInView:self];
+			CGFloat alt = [sample altitudeAngle];
+			CGVector azim = [sample azimuthUnitVectorInView:self];
+			// Only the final sample is the current position; the earlier ones are marked
+			// `coalesced` so Input's accumulator cannot fold the path back into a chord.
+			DisplayServerAppleEmbedded::get_singleton()->touch_drag(tid, prev_point.x * self.contentScaleFactor, prev_point.y * self.contentScaleFactor, touchPoint.x * self.contentScaleFactor, touchPoint.y * self.contentScaleFactor, [sample force] / [sample maximumPossibleForce], Vector2(azim.dx, azim.dy) * Math::cos(alt), i != last, false);
+			prev_point = touchPoint;
+		}
+
+		if (!use_predicted || event == nil) {
+			continue;
+		}
+
+		NSArray<UITouch *> *predicted = [event predictedTouchesForTouch:touch];
+		const NSTimeInterval horizon = touch.timestamp + prediction_lead;
+		for (UITouch *sample in predicted) {
+			if (sample.timestamp > horizon) {
+				break;
+			}
+			CGPoint touchPoint = [sample locationInView:self];
+			CGFloat alt = [sample altitudeAngle];
+			CGVector azim = [sample azimuthUnitVectorInView:self];
+			DisplayServerAppleEmbedded::get_singleton()->touch_drag(tid, prev_point.x * self.contentScaleFactor, prev_point.y * self.contentScaleFactor, touchPoint.x * self.contentScaleFactor, touchPoint.y * self.contentScaleFactor, [sample force] / [sample maximumPossibleForce], Vector2(azim.dx, azim.dy) * Math::cos(alt), false, true);
+			prev_point = touchPoint;
+		}
 	}
 }
 

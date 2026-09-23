@@ -24,6 +24,8 @@ Plan of record: `twitchwidget/docs/native-app-plan.md` §2.10.
 | `1488ebd31b` | `drivers/apple_embedded/godot_view_apple_embedded.mm` | engine | `handleMotion` read the orientation through `[UIApplication.sharedApplication.delegate window]`; a SwiftUI app's generated delegate has no `window` → unrecognized selector → SIGABRT on the first `drawView`. Uses `self.window`, falling back to a connected scene's key window. |
 | `7cb0504090` | `platform/ios/libgodot_ios.mm`, new `drivers/apple_embedded/ug_instr.h` | instrumentation | Pintap's `[GODOT-INSTR]` `fprintf` lines through `libgodot_create_godot_instance`, kept verbatim behind `UG_GODOT_INSTR` (see below). The one-instance rule is **baseline** behaviour (`ERR_FAIL_COND_V_MSG(instance != nullptr, nullptr, …)` already returned nullptr on a second create; `libgodot_destroy_godot_instance` already ran `Main::cleanup`); Pintap only re-expressed it as a bare `if` with an instrumentation line. This commit keeps the engine's error message (`ERR_FAIL_V_MSG`) inside that `if`. |
 | `35ac1756ff` | `drivers/apple_embedded/godot_view_renderer.mm` | engine (+1 instrumentation line) | When the engine was created through libgodot (`GodotInstance::start` from SwiftGodotKit), `Main::setup2`/`OS::start` have already run by GDTView's first `drawView`; `GDTViewRenderer::setupView` ran its own `setupProjectData`/`Main::setup2` again and crashed. If `OS::get_singleton()->get_main_loop()` exists, mark the three setup stages done and return NO. Its diagnostic line is behind `UG_GODOT_INSTR`. |
+| _(this commit)_ | `drivers/apple_embedded/godot_view_apple_embedded.mm` | engine (new) | **CADisplayLink asks for a `CAFrameRateRange`, not the deprecated fixed `preferredFramesPerSecond`.** A fixed request can only be honoured at a divisor of the panel rate, so one missed frame drops a ProMotion phone from 120 to 60 with no mandate to climb back. The range is `[preferred × 2/3 … preferred]` above 60 Hz (80…120 at 120, Apple's own worked example) and collapses to the old fixed request at 60 and below and on pre-iOS-15. |
+| _(this commit)_ | `drivers/apple_embedded/godot_view_apple_embedded.mm`, `drivers/apple_embedded/display_server_apple_embedded.{h,mm}`, `core/input/input_event.{h,cpp}` | engine (new) | **Coalesced and predicted touches.** See § "Coalesced and predicted touches" below. |
 | `25dbb0bc41` | `platform/ios/libgodot_ios.mm`, `core/extension/libgodot.h`, `drivers/apple_embedded/os_apple_embedded.h`, `main/main.h`, `main/main.cpp` | engine (new) | The plan's ONE new patch: `libgodot_ios_sleep()` / `libgodot_ios_wake()` / `libgodot_ios_is_asleep()`, plus `Main::reset_frame_clock()` and a focus-latch accessor pair on `OS_AppleEmbedded`. Full semantics in § "The sleep()/wake() export" below. |
 
 Pintap's own record of why each patch exists: Claude memory
@@ -292,3 +294,45 @@ because the symbol the host would call does not exist in it, and a host that
 calls it will not link. That criterion needs an archive rebuilt from this
 branch. `UGGames/jigsaw-mobile` `scripts/build-libgodot.sh` produces one and
 `scripts/fetch-libgodot.sh --verify` says plainly which archive is in play.
+
+
+## Coalesced and predicted touches
+
+`-touchesMoved:withEvent:` accepted the `UIEvent` and never used it: Godot read
+`locationInView:` off the delivered `UITouch` and discarded the rest. The digitizer samples at up
+to 240 Hz while UIKit delivers at the display rate, so roughly half of every 120 Hz drag was thrown
+away — not a latency cost (the newest sample was still the newest) but a **fidelity** cost for any
+decision taken on the shape of the path rather than its endpoint.
+
+`InputEventScreenDrag` gains two bools, both bound and both carried through `xformed_by`:
+
+- **`coalesced`** — an intermediate sample of a `coalescedTouchesForTouch:` batch. Every sample of
+  a batch is emitted, in order, with `prev_point` chained so each `relative` is a real segment
+  whose sum equals the chord the old code reported. Only the final sample is the current position.
+- **`predicted`** — a `predictedTouchesForTouch:` extrapolation, i.e. not a measurement. Only the
+  samples within ONE frame (`1.0 / preferredFrameRate`) of the real touch's timestamp are emitted;
+  UIKit offers more and the rest is dropped deliberately.
+
+`InputEventScreenDrag::accumulate` refuses to fold when either side is `coalesced`, or when
+`predicted` differs. **Without that refusal both features are no-ops**: Godot's accumulator exists
+to keep the newest position and drop the rest, which would fold a batch straight back into the
+chord it was read to avoid, and would silently promote a predicted position into a real event. Two
+ordinary deliveries in one tick still accumulate exactly as before.
+
+`DisplayServerAppleEmbedded::touch_drag` gained two defaulted trailing bools, so every existing
+call site keeps its exact previous meaning.
+
+Both are project settings, `GLOBAL_DEF`'d in `godot_commonInit` and read in `-touchesMoved:`
+through `GLOBAL_GET_CACHED` (which re-reads on any `ProjectSettings` change, so a game can flip
+them at runtime with `ProjectSettings.set_setting()` and the next touch obeys):
+
+| setting | default | why |
+|---|---|---|
+| `input_devices/pointing/apple_embedded/coalesced_touches` | **true** | pure fidelity win, no behavioural risk; the setting is a kill switch |
+| `input_devices/pointing/apple_embedded/predicted_touches` | **false** | a prediction is a guess. Turn it on only for the span of a gesture that is a pure function of the finger position (dragging one object); a game that commits state on a predicted sample commits the wrong state |
+
+Consumer side, for reference: jigsaw-mobile's `gesture_fsm.gd` turns `predicted_touches` on for
+exactly `State.DRAG`, moves the held piece on a predicted sample and touches **nothing** else — no
+tracker update, no state transition, no commit — so a wrong guess is overwritten by the next real
+sample and the drop always commits from the real touch-up position. See that repo's
+`docs/touch-latency.md`.

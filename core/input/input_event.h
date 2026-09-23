@@ -402,6 +402,15 @@ class InputEventScreenDrag : public InputEventFromWindow {
 	Vector2 tilt;
 	float pressure = 0;
 	bool pen_inverted = false;
+	// UGGames fork (ug/jigsaw-4.6.1). See docs/PATCHES.md, "Coalesced and predicted touches".
+	// `coalesced`: one of the intermediate samples UIKit gathered between two deliveries
+	// (UIEvent.coalescedTouches(for:)). It is a real measurement, but it must NOT be folded
+	// into its neighbours or the path collapses back to the chord it was meant to recover.
+	// `predicted`: not a measurement at all -- UIKit's extrapolation of where the finger is
+	// about to be (UIEvent.predictedTouches(for:)). Consumers must treat it as temporary and
+	// must never commit anything on it; the next real sample supersedes it.
+	bool coalesced = false;
+	bool predicted = false;
 
 protected:
 	static void _bind_methods();
@@ -409,6 +418,12 @@ protected:
 public:
 	void set_index(int p_index);
 	int get_index() const;
+
+	void set_coalesced(bool p_coalesced);
+	bool is_coalesced() const;
+
+	void set_predicted(bool p_predicted);
+	bool is_predicted() const;
 
 	void set_tilt(const Vector2 &p_tilt);
 	Vector2 get_tilt() const;
