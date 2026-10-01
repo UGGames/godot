@@ -171,14 +171,18 @@
 		return NO;
 	}
 
+#ifdef GLES3_ENABLED
 	GLES3::TextureStorage::system_fbo = viewFramebuffer;
+#endif
 
 	return YES;
 }
 
 // Clean up any buffers we have allocated.
 - (void)destroyFramebuffer {
+#ifdef GLES3_ENABLED
 	GLES3::TextureStorage::system_fbo = 0;
+#endif
 
 	glDeleteFramebuffersOES(1, &viewFramebuffer);
 	viewFramebuffer = 0;
