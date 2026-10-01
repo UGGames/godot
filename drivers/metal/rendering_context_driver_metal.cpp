@@ -96,6 +96,11 @@ void RenderingContextDriverMetal::driver_free(RenderingDeviceDriver *p_driver) {
 }
 
 class API_AVAILABLE(macos(11.0), ios(14.0), tvos(14.0)) SurfaceLayer : public RenderingContextDriverMetal::Surface {
+	// UGGames (jigsaw-mobile ug_bridge host): the surface OWNS a reference to its CAMetalLayer. Upstream keeps a raw,
+	// unretained pointer; when an embedding host (SwiftUI) re-mounts the view, the GDTView and its layer are freed while
+	// the DisplayServer still holds this surface, and the next acquire_next_frame_buffer messages freed memory
+	// (SIGSEGV). Measured on 4.6 with the Obj-C driver (__unsafe_unretained); the metal-cpp driver of 4.7 has the same
+	// raw pointer, so: retain in the constructor, release in the destructor.
 	CA::MetalLayer *layer = nullptr;
 	LocalVector<MDFrameBuffer> frame_buffers;
 	LocalVector<MTL::Drawable *> drawables;
@@ -105,7 +110,7 @@ class API_AVAILABLE(macos(11.0), ios(14.0), tvos(14.0)) SurfaceLayer : public Re
 
 public:
 	SurfaceLayer(CA::MetalLayer *p_layer, MTL::Device *p_device) :
-			Surface(p_device), layer(p_layer) {
+			Surface(p_device), layer(p_layer->retain()) {
 		layer->setAllowsNextDrawableTimeout(true);
 		layer->setFramebufferOnly(true);
 		layer->setOpaque(!OS::get_singleton()->is_layered_allowed());
@@ -114,6 +119,9 @@ public:
 	}
 
 	~SurfaceLayer() override {
+		if (layer != nullptr) {
+			layer->release();
+		}
 		layer = nullptr;
 	}
 
