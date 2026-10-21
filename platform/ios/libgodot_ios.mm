@@ -28,6 +28,7 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
+#include <atomic>
 #include "core/extension/libgodot.h"
 
 #include "core/extension/godot_instance.h"
@@ -203,4 +204,25 @@ void libgodot_ios_wake(GDExtensionObjectPtr p_godot_instance) {
 
 GDExtensionBool libgodot_ios_is_asleep(void) {
 	return asleep ? 1 : 0;
+}
+
+#if defined(METAL_ENABLED)
+extern std::atomic<uint64_t> ug_gpu_busy_ns;
+extern std::atomic<uint64_t> ug_gpu_command_buffers;
+#endif
+
+uint64_t libgodot_ios_gpu_ns(void) {
+#if defined(METAL_ENABLED)
+	return ug_gpu_busy_ns.load(std::memory_order_relaxed);
+#else
+	return 0;
+#endif
+}
+
+uint64_t libgodot_ios_gpu_command_buffers(void) {
+#if defined(METAL_ENABLED)
+	return ug_gpu_command_buffers.load(std::memory_order_relaxed);
+#else
+	return 0;
+#endif
 }

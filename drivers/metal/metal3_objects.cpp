@@ -48,6 +48,7 @@
 /* permissions and limitations under the License.                         */
 /**************************************************************************/
 
+#include <atomic>
 #include "metal3_objects.h"
 
 #include "drivers/metal/metal_utils.h"
@@ -112,8 +113,22 @@ void MDCommandBuffer::end() {
 	}
 }
 
+// UGGames (ug/jigsaw-4.7.2): the GPU's own account of the engine's work, for the host's power samples (Jigsaw 1.2 —
+// "keep measuring so we can fix"). RenderingDevice's timestamp queries read 0 on this driver, so each command buffer
+// reports GPUEndTime − GPUStartTime when it completes; the host reads the running total (libgodot_ios_gpu_ns) and
+// turns a minute's difference into the share of that minute the GPU spent on the board. Measuring only.
+std::atomic<uint64_t> ug_gpu_busy_ns{ 0 };
+std::atomic<uint64_t> ug_gpu_command_buffers{ 0 };
+
 void MDCommandBuffer::commit() {
 	end();
+	commandBuffer->addCompletedHandler([](MTL::CommandBuffer *p_cb) {
+		const double d = p_cb->GPUEndTime() - p_cb->GPUStartTime();
+		if (d > 0.0 && d < 1.0) {
+			ug_gpu_busy_ns.fetch_add((uint64_t)(d * 1e9), std::memory_order_relaxed);
+			ug_gpu_command_buffers.fetch_add(1, std::memory_order_relaxed);
+		}
+	});
 	if (use_barriers) {
 		if (_scratch.is_changed()) {
 			Span<MTL::Buffer *const> bufs = _scratch.get_buffers();

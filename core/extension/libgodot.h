@@ -133,6 +133,16 @@ LIBGODOT_API void libgodot_ios_wake(GDExtensionObjectPtr p_godot_instance);
  */
 LIBGODOT_API GDExtensionBool libgodot_ios_is_asleep(void);
 
+/**
+ * @name libgodot_ios_gpu_ns / libgodot_ios_gpu_command_buffers
+ * @since 4.7.2 (UGGames fork ug/jigsaw-4.7.2)
+ *
+ * Running totals of the GPU time the Metal driver's command buffers took (GPUEndTime − GPUStartTime, summed as each
+ * completes) and of how many completed. 0 on a build without Metal. The host samples the difference over a window.
+ */
+LIBGODOT_API uint64_t libgodot_ios_gpu_ns(void);
+LIBGODOT_API uint64_t libgodot_ios_gpu_command_buffers(void);
+
 #endif // LIBGODOT_APPLE_EMBEDDED
 
 #ifdef __cplusplus
